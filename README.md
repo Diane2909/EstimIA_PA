@@ -1,153 +1,72 @@
 # EstimIA — L'estimation immobilière augmentée
 
-> Application web terrain permettant aux agents immobiliers de produire un rapport d'estimation complet, précis et professionnel en moins de 5 minutes — directement sur le terrain.
+> Application web permettant aux agents immobiliers de produire un rapport d'estimation immobilière complet en temps réel, couvrant toute l'Île-de-France.
 
 ---
 
 ## Présentation
 
-EstimIA combine la précision du calcul statistique et l'intelligence d'un modèle de langage local (SLM) pour produire des estimations immobilières en temps réel. L'application interroge les données ouvertes françaises (DVF, DPE, Géorisques, Délinquance) et génère un rapport structuré sans jamais envoyer de données sensibles vers un cloud externe.
+EstimIA combine un modèle RandomForest entraîné sur **787 260 transactions** DVF Île-de-France (2021–2025) et un agent conversationnel IA local (Ollama + LangChain) pour produire des estimations enrichies avec des indicateurs micro-locaux : DPE, Géorisques, Délinquance.
+
+Le projet fonctionne **sans aucun coût d'API** — le LLM tourne en local via Ollama. Un FallbackAgent déterministe prend le relais automatiquement si Ollama est hors-ligne.
 
 **Projet annuel — groupe de 2-3 personnes**
 
 ---
 
-## Architecture réelle
+## Architecture
 
 ```
-Agent immobilier (saisit adresse + critères)
+Frontend — Next.js 16 + React 19   (port 3000)
         │
+        │  POST /estimate   →  { surface, pieces, code_postal, type_bien, annee_visite }
+        │  POST /agent/chat →  { message }
         ▼
-Frontend — Streamlit + Folium (carte interactive)
+Backend — Python FastAPI            (port 8000)
         │
-        │  Appels Python directs
-        ▼
-Backend — Python FastAPI
+        ├──► tools.py
+        │       ├── modele_estimation.pkl    (RandomForest entraîné)
+        │       ├── colonnes_modele.pkl      (ordre des features)
+        │       └── lookup_postaux.pkl       (code postal → GPS + scores)
         │
-        ├──► Moteur ML (Scikit-learn)
-        │       ├── Régression prix (RandomForest / KNN)
-        │       └── Clustering biens (K-Means)
-        │
-        ├──► tools.py (outils de l'agent)
-        │       ├── estimer_prix()
-        │       └── obtenir_risques_climatiques()
-        │
-        └──► Agent IA (Ollama + LangChain)
-                └── Modèle local Llama 3 GGUF — synthèse rapport
-
-Sources de données (data.gouv.fr — open data officiel)
-        ├── DVF (transactions foncières)
-        ├── DPE (diagnostics énergétiques — ADEME)
-        ├── Géorisques (API officielle)
-        └── Délinquance (Interstats)
-
-Déploiement
-        └── Docker → AWS EC2
+        └──► agent.py
+                ├── LangChain ReAct Agent   (si Ollama est lancé)
+                └── FallbackAgent           (si Ollama est hors-ligne)
 ```
-
-### Choix techniques justifiés
-
-| Composant | Choix | Justification |
-|-----------|-------|---------------|
-| Frontend | Streamlit + streamlit-folium | Tout en Python, carte interactive, démo jury immédiate |
-| Carte | Folium | Clic → latitude/longitude automatique |
-| Backend | Python FastAPI | Async, compatible ML, léger |
-| ML | Scikit-learn (RandomForest / KNN) | Adapté aux données spatiales, pas de GPU requis |
-| LLM | Ollama (Llama 3 GGUF local) | Zéro coût API, RGPD natif, données non exposées |
-| Orchestration | LangChain | Liaison LLM ↔ tools.py |
-| Données | data.gouv.fr + API Géorisques | Open data officiel, gratuit |
-| Déploiement | Docker + AWS EC2 | Scalable, Free Tier 12 mois |
 
 ---
 
 ## Stack technique
 
-- **Frontend** : Streamlit, streamlit-folium, Folium
-- **Backend** : Python 3.11+, FastAPI, Uvicorn
-- **Machine Learning** : Scikit-learn, Pandas, NumPy, GeoPandas
-- **Agent IA** : Ollama (Llama 3 GGUF), LangChain
-- **Données** : DVF data.gouv.fr, DPE ADEME, API Géorisques, Délinquance Interstats
-- **Infra** : Docker, AWS EC2, Ngrok (hybride si besoin)
-- **Qualité code** : Ruff (linter + formatter)
+**Backend**
+- Python 3.11+, FastAPI, Uvicorn
+- Scikit-learn, Pandas, NumPy, GeoPandas, Joblib
+- LangChain, LangChain-Community, Ollama (Llama 3 GGUF)
+- Ruff (linter + formatter)
+
+**Frontend**
+- Next.js 16, React 19, Tailwind CSS 4
+- Leaflet 1.9.4, react-leaflet 5
+- Fetch API
+
+**Infra**
+- Docker, AWS EC2 t3.micro (Free Tier)
 
 ---
 
 ## Features du modèle ML
 
-Features utilisées pour la régression de prix :
-
 | Feature | Source | Type |
 |---------|--------|------|
 | Surface (m²) | DVF | Numérique |
 | Nombre de pièces | DVF | Numérique |
-| Type de bien (appt/maison) | DVF | Catégoriel |
-| Classe DPE (A→G encodée 1–7) | DPE ADEME | Ordinal |
-| Score Géorisques (0–10) | Géorisques | Numérique |
-| Score insécurité (0–10) | Interstats | Numérique |
-| Code INSEE commune | DVF | Encodé |
-| Médiane transactions DVF 500m | DVF | Numérique |
-
-**Clustering K-Means** : les biens sont regroupés en 4–6 classes (ex : studio centre-ville, appartement familial périurbain, maison avec terrain) pour contextualiser l'estimation dans le rapport.
-
----
-
-## Utilisation du LLM
-
-Le LLM est utilisé **uniquement pour la synthèse narrative** du rapport. Il ne prédit pas de prix.
-
-- Reçoit en entrée : prix estimé, intervalle de confiance, classe DPE, score risques, cluster du bien, transactions comparables
-- Génère : un rapport en langage naturel structuré (résumé, analyse, points forts/faibles, recommandations)
-- Pas de fine-tuning, pas d'entraînement : modèle pré-entraîné Llama 3 GGUF quantisé (Q4_K_M)
-- API locale Ollama : `http://localhost:11434`
-
----
-
-## Roadmap — 6 phases
-
-### Phase 1 — Ingénierie des données
-- [x] Téléchargement DVF Paris (75) — 28 239 transactions 2024
-- [x] Intégration DPE (ADEME) — 100 000 diagnostics, 21 communes
-- [x] Enrichissement Géorisques — API officielle, 20 communes
-- [ ] Intégration Délinquance (Interstats)
-- [x] Nettoyage, fusion par Code INSEE
-
-**Livrable :** `dataset_propre_75.csv` — 28 239 lignes, 0 valeur manquante
-
-### Phase 2 — Modélisation prédictive (ML)
-- [ ] Split train 80% / test 20%
-- [ ] Régression RandomForest + KNN
-- [ ] Clustering K-Means (classes de logements)
-- [ ] Évaluation : MAE, RMSE, R²
-
-**Livrable :** `modele_estimation.pkl`
-
-### Phase 3 — Outils de l'agent
-- [ ] `estimer_prix(surface, lat, lon)`
-- [ ] `obtenir_risques_climatiques(lat, lon)`
-
-**Livrable :** `backend/agent/tools.py`
-
-### Phase 4 — Orchestration de l'agent IA
-- [ ] Ollama + Llama 3 GGUF en local
-- [ ] LangChain → liaison LLM ↔ tools.py
-- [ ] Prompt système (rôle expert immobilier + guardrails)
-
-**Livrable :** `backend/agent/agent.py`
-
-### Phase 5 — Interface utilisateur (Streamlit)
-- [ ] Carte Folium interactive — clic → latitude/longitude
-- [ ] Formulaire (surface, nb pièces, type de bien)
-- [ ] Affichage rapport + visualisation interactive
-- [ ] Export PDF
-
-**Livrable :** `app.py`
-
-### Phase 6 — Déploiement Cloud (AWS)
-- [ ] Dockerfile + docker-compose
-- [ ] AWS EC2 t3.micro (Free Tier 12 mois)
-- [ ] URL publique accessible par le jury
-
-**Livrable :** URL publique
+| Année de référence | DVF | Numérique |
+| Latitude / Longitude | Lookup postal | Numérique |
+| Score DPE médian (1=A … 7=G) | DPE ADEME | Ordinal |
+| Score Géorisques (0–10) | API Géorisques | Numérique |
+| Score délinquance (0–10) | Interstats | Numérique |
+| Type de bien | DVF | One-Hot (Maison / Appartement) |
+| Département | DVF | One-Hot (75, 77, 78, 91–95) |
 
 ---
 
@@ -155,37 +74,65 @@ Le LLM est utilisé **uniquement pour la synthèse narrative** du rapport. Il ne
 
 ```
 estimia/
-├── app.py                        # Point d'entrée Streamlit (Phase 5)
-├── Dockerfile
-├── docker-compose.yml
-├── pyproject.toml                # Config Ruff
-├── .gitignore
 │
 ├── backend/
-│   ├── main.py                   # Point d'entrée FastAPI
+│   ├── api.py                      # Routes FastAPI : / · /estimate · /agent/chat
+│   ├── main.py                     # Driver : pipeline IDF multi-départements
+│   ├── tools.py                    # outil_estimation_ml() — moteur ML
+│   ├── agent.py                    # LangChain ReAct Agent + FallbackAgent
+│   ├── train_model.py              # Entraînement RandomForest
 │   ├── requirements.txt
-│   ├── api/
-│   │   └── estimate.py           # Route POST /estimate
-│   ├── agent/
-│   │   ├── agent.py              # Orchestration LangChain + Ollama
-│   │   └── tools.py              # estimer_prix() + risques_climatiques()
-│   ├── ml/
-│   │   ├── regression.py         # RandomForest + KNN
-│   │   ├── clustering.py         # K-Means
-│   │   └── models/
-│   │       └── modele_estimation.pkl
-│   └── data/
-│       ├── pipeline.py           # Pipeline données 
-│       ├── raw/
-│       └── processed/
-│           └── dataset_propre_75.csv
+│   │
+│   ├── data/
+│   │   ├── pipeline.py             # Pipeline DVF + DPE + Géorisques + Délinquance
+│   │   ├── raw/                    # Fichiers bruts (gitignore)
+│   │   └── processed/
+│   │       └── dataset_propre.csv  # Dataset IDF fusionné
+│   │
+│   ├── model/
+│   │   ├── modele_estimation.pkl
+│   │   ├── colonnes_modele.pkl
+│   │   └── lookup_postaux.pkl
+│   │
+│   └── scripts/
+│       └── create_lookup_table.py
+│
+├── frontend/
+│   ├── package.json                # Next.js 16, React 19, Leaflet, Tailwind 4
+│   ├── jsconfig.json               # Alias @/* → ./src/*
+│   ├── next.config.mjs
+│   ├── postcss.config.mjs
+│   └── src/
+│       ├── app/
+│       │   ├── layout.js
+│       │   ├── page.js             # Page principale — 2 onglets
+│       │   └── globals.css
+│       └── components/
+│           ├── EstimationForm.js   # Formulaire + validation IDF
+│           ├── EstimationResult.js # Résultat + animation prix + indicateurs
+│           ├── InteractiveMap.js   # Wrapper Leaflet SSR-safe
+│           ├── MapInner.js         # Carte dark mode + marqueur
+│           └── Chatbot.js          # Interface Geo-Estate AI
 │
 ├── notebooks/
 │   ├── 01_eda_dvf.ipynb
-│   ├── 02_regression_experiments.ipynb
-│   └── 03_clustering_analysis.ipynb
+│   └── 02_modelisation_ia.ipynb
 │
-└── docs/
+├── docs/
+│   ├── generate_eda_plots.py
+│   ├── fig_distribution_prix.png
+│   ├── fig_correlations.png
+│   ├── fig_importances_features.png
+│   ├── fig_predictions_vs_reelles.png
+│   ├── fig_prix_code_postal.png
+│   ├── fig_risques_delinquance_departement.png
+│   ├── carte_prix_idf.html
+│   └── fig_evolution_prix.html
+│
+├── Dockerfile
+├── docker-compose.yml
+├── pyproject.toml                  # Config Ruff
+└── .gitignore
 ```
 
 ---
@@ -197,6 +144,9 @@ estimia/
 - Python 3.11+
 - Node.js 18+
 - Git
+- [Ollama](https://ollama.ai/) — optionnel
+
+---
 
 ### Étape 1 — Cloner le repo
 
@@ -205,41 +155,99 @@ git clone https://github.com/<votre-org>/estimia.git
 cd estimia
 ```
 
-### 2. Backend Python
+---
+
+### Étape 2 — Installer les dépendances Python
 
 ```bash
 cd backend
 python -m venv venv
 source venv/bin/activate      # Windows : venv\Scripts\activate
 pip install -r requirements.txt
-cp ../.env.example .env
-uvicorn main:app --reload --port 8000
 ```
 
-### 3. Pipeline de données
+---
+
+### Étape 3 — Générer le dataset IDF
 
 ```bash
-cd data
-python pipeline.py            # télécharge et nettoie les données
-python pipeline.py --skip-download  # si déjà téléchargé
+# Tous les départements IDF (75, 77, 78, 91, 92, 93, 94, 95)
+python main.py
+
+# Si les fichiers sont déjà téléchargés
+python main.py --skip-download
+
+# Un seul département pour tester
+python data/pipeline.py --dept 75
 ```
 
-### 4. Ollama — LLM local
+Produit : `backend/data/processed/dataset_propre.csv`
+
+---
+
+### Étape 4 — Entraîner le modèle ML
+
+```bash
+# Entraînement complet (~787k transactions, ~10 min)
+python train_model.py
+
+# Sur un échantillon (plus rapide, pour tester)
+python train_model.py --sample 200000
+```
+
+Produit dans `backend/model/` :
+- `modele_estimation.pkl`
+- `colonnes_modele.pkl`
+
+---
+
+### Étape 5 — Générer la table de correspondance géographique
+
+```bash
+python scripts/create_lookup_table.py
+```
+
+Produit : `backend/model/lookup_postaux.pkl`
+
+> Cette étape est **obligatoire** avant de lancer l'API.
+
+---
+
+### Étape 6 — Lancer le backend FastAPI
+
+```bash
+uvicorn api:app --reload --port 8000
+```
+
+- API : `http://localhost:8000`
+- Documentation : `http://localhost:8000/docs`
+
+---
+
+### Étape 7 — (Optionnel) Lancer Ollama
 
 ```bash
 ollama pull llama3
 ollama serve
-# LLM disponible sur http://localhost:11434
 ```
 
-### 5. Lancer l'application
+Si Ollama n'est pas lancé, le **FallbackAgent** s'active automatiquement — l'application reste 100% fonctionnelle.
+
+---
+
+### Étape 8 — Lancer le frontend Next.js
 
 ```bash
-cd ../..
-streamlit run app.py
+cd ../frontend
+npm install
+npm run dev
 ```
 
-### 6. Docker
+Application : `http://localhost:3000`
+
+---
+
+### Docker (déploiement complet en une commande)
 
 ```bash
 docker-compose up --build
@@ -247,13 +255,67 @@ docker-compose up --build
 
 ---
 
-## Variables d'environnement
+## Routes API
 
-```env
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=llama3
-GEORISQUES_API=https://georisques.gouv.fr/api/v1
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| GET | `/` | Status + état des modèles chargés |
+| POST | `/estimate` | Estimation ML d'un bien |
+| POST | `/agent/chat` | Chat Geo-Estate AI |
+
+### POST /estimate — exemple
+
+Requête :
+```json
+{
+  "surface": 65,
+  "pieces": 3,
+  "code_postal": "92100",
+  "type_bien": "Appartement",
+  "annee_visite": 2025
+}
 ```
+
+Réponse :
+```json
+{
+  "prix_estime": 387500.0,
+  "surface_m2": 65,
+  "nb_pieces": 3,
+  "type_bien": "Appartement",
+  "code_postal": "92100",
+  "departement": "92",
+  "latitude": 48.8392,
+  "longitude": 2.2408,
+  "score_dpe_median": 4.0,
+  "classe_dpe": "D",
+  "score_georisques": 3.2,
+  "score_delinquance": 1.0,
+  "source_resolution": "code_postal"
+}
+```
+
+Codes postaux acceptés : `75xxx · 77xxx · 78xxx · 91xxx · 92xxx · 93xxx · 94xxx · 95xxx`
+
+---
+
+## Générer les figures EDA
+
+```bash
+cd docs
+python generate_eda_plots.py
+```
+
+---
+
+## Données utilisées
+
+| Source | Contenu | Couverture | Statut |
+|--------|---------|------------|--------|
+| DVF (data.gouv.fr) | Transactions foncières | IDF 2021–2025 | ✅ |
+| DPE (ADEME) | Diagnostics énergétiques | IDF | ✅ |
+| Géorisques (API) | Risques naturels par commune | IDF | ✅ |
+| Délinquance (Interstats) | Taux par département | IDF | ✅ |
 
 ---
 
@@ -263,36 +325,37 @@ GEORISQUES_API=https://georisques.gouv.fr/api/v1
 
 | Branche | Rôle |
 |---------|------|
-| `main` | Production — protégée, merge via PR |
-| `develop` | Intégration |
-| `feature/data-pipeline` | Phase 1  |
-| `feature/ml-regression` | Phase 2 |
-| `feature/agent-tools` | Phase 3 |
-| `feature/agent-llm` | Phase 4 |
-| `feature/frontend` | Phase 5 |
-| `feature/deployment` | Phase 6 |
+| `main` | Production — protégée, merge via PR uniquement |
+| `develop` | Intégration continue |
+| `feature/data-pipeline` | Pipeline données IDF ✅ |
+| `feature/ml-regression` | Entraînement + évaluation modèle ✅ |
+| `feature/agent-tools` | tools.py + lookup table ✅ |
+| `feature/agent-llm` | LangChain + FallbackAgent ✅ |
+| `feature/frontend` | Next.js ✅ |
+| `feature/deployment` | Docker + AWS 🔲 |
 
 ### Format des commits
 
 ```
-feat(data): DVF pipeline Paris 75 — 28239 transactions
-feat(ml): implement RandomForest regression
-feat(tools): add estimer_prix and risques_climatiques
-feat(agent): integrate Ollama Llama3 with LangChain
-feat(frontend): add Folium interactive map
-fix(data): update DVF URL 2024
+feat(data): pipeline IDF 8 départements — 787260 transactions
+feat(ml): RandomForest entraîné MAE + RMSE + R²
+feat(tools): outil_estimation_ml avec lookup géographique
+feat(agent): LangChain ReAct + FallbackAgent déterministe
+feat(frontend): Next.js formulaire + carte Leaflet + chatbot
+fix(api): CORS pour Next.js local
+chore: update requirements.txt
 ```
 
 ---
 
-## Données utilisées
+## Roadmap
 
-| Source | Contenu | Statut |
-|--------|---------|--------|
-| DVF (data.gouv.fr) | 28 239 transactions Paris 2024 | ✅ |
-| DPE (ADEME) | 100 000 diagnostics, 21 communes | ✅ |
-| Géorisques | Risques naturels, 20 communes | ✅ |
-| Délinquance (Interstats) | Taux par département | 🔲 |
+- [x] Phase 1 — Pipeline données IDF (8 départements, 787 260 transactions)
+- [x] Phase 2 — Modèle ML RandomForest + notebooks EDA
+- [x] Phase 3 — tools.py + table de correspondance géographique
+- [x] Phase 4 — Agent LangChain + FallbackAgent déterministe
+- [x] Phase 5 — Frontend Next.js (formulaire, carte Leaflet, chatbot)
+- [ ] Phase 6 — Déploiement AWS EC2 + Docker
 
 ---
 
