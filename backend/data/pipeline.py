@@ -67,23 +67,34 @@ DVF_URL = (
     "https://files.data.gouv.fr/geo-dvf/latest/csv/{year}/departements/{dept}.csv.gz"
 )
 
-# DPE Logements existants — data.ademe.fr (export CSV complet)
-DPE_URL = (
-    "https://data.ademe.fr/data-fair/api/v1/datasets/"
-    "dpe-v2-logements-existants-bdnb/lines"
-    "?size=10000&q_fields=code_insee_commune_actualise&q={dept_star}"
-    "&select=numero_dpe,code_insee_commune_actualise,"
-    "etiquette_dpe,date_etablissement_dpe"
-    "&format=csv"
-)
+# DPE Logements existants — data.ademe.fr (API data-fair, paginée par curseur "after")
+DPE_API_URL = "https://data.ademe.fr/data-fair/api/v1/datasets/dpe03existant/lines"
+DPE_PAGE_SIZE = 10_000
+
+
+def _get_json_with_retry(url: str, params: dict | None, max_retries: int = 6) -> dict:
+    """
+    GET JSON avec retry/backoff, dédié aux API sujettes au rate-limit (429).
+    Respecte l'en-tête Retry-After si présent, sinon backoff progressif.
+    """
+    for attempt in range(max_retries):
+        r = requests.get(url, params=params, timeout=60)
+        if r.status_code == 429:
+            wait = int(r.headers.get("Retry-After", 5 * (attempt + 1)))
+            log.info(f"  429 Too Many Requests — pause {wait}s (tentative {attempt + 1}/{max_retries})")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r.json()
+    raise RuntimeError("Nombre maximal de tentatives dépassé (429 persistant)")
 
 # Géorisques — API par commune (appel unitaire par code INSEE)
 GEORISQUES_URL = "https://georisques.gouv.fr/api/v1/gaspar/risques?code_insee={insee}"
 
-# Délinquance — Interstats data.gouv.fr (taux pour 1000 habitants par département)
+# Délinquance — Ministère de l'Intérieur / data.gouv.fr
+# Lien permanent vers la ressource "DEP - Base statistique départementale" (toujours la dernière version)
 DELINQUANCE_URL = (
-    "https://www.data.gouv.fr/fr/datasets/r/"
-    "5d9b8b1f-9ac5-4d54-8419-b0e6b9fc68d7"
+    "https://www.data.gouv.fr/fr/datasets/r/2b27a675-e3bf-41ef-a852-5fb9ab483967"
 )
 
 # ---------------------------------------------------------------------------
@@ -220,13 +231,71 @@ def clean_dvf(df: pd.DataFrame) -> pd.DataFrame:
 # 3. Téléchargement & intégration DPE
 # ---------------------------------------------------------------------------
 
+def download_dpe(dept: str, skip: bool = False) -> Path | None:
+    """
+    Télécharge les DPE d'un département depuis l'API ADEME (dataset "dpe03existant").
+    L'API plafonne chaque page à DPE_PAGE_SIZE lignes ; on suit le curseur "next"
+    renvoyé par data-fair jusqu'à épuisement des résultats.
+    """
+    dest = DATA_DIR / f"dpe_{dept}.csv"
+    if skip and dest.exists():
+        log.info(f"DPE {dept} déjà présent, skip téléchargement")
+        return dest
+
+    log.info(f"Téléchargement DPE {dept} (API ADEME, pagination par curseur)…")
+
+    params = {
+        "qs": f"code_insee_ban:{dept}*",
+        "select": "etiquette_dpe,code_insee_ban",
+        "size": DPE_PAGE_SIZE,
+    }
+    url = DPE_API_URL
+
+    rows = []
+    total = None
+    try:
+        while url:
+            data = _get_json_with_retry(url, params)
+            if total is None:
+                total = data.get("total", 0)
+
+            rows.extend(data.get("results", []))
+            print(f"\r  {len(rows):,}/{total:,} lignes DPE récupérées", end="", flush=True)
+
+            url = data.get("next")
+            params = None  # "next" contient déjà tous les paramètres de requête
+            if url:
+                time.sleep(0.3)  # pause courtoise entre pages pour éviter le rate-limit (429)
+    except Exception as e:
+        print()
+        log.warning(f"  Échec du téléchargement DPE {dept} : {e}")
+        return None
+
+    print()
+    # Un total partiel (429 persistant, coupure réseau...) ne doit jamais être
+    # sauvegardé comme s'il était complet : mieux vaut échouer proprement.
+    if total and len(rows) < total:
+        log.warning(f"  Téléchargement DPE {dept} incomplet ({len(rows):,}/{total:,}) — fichier non sauvegardé")
+        return None
+
+    if not rows:
+        log.warning(f"  Aucune donnée DPE trouvée pour le département {dept}")
+        return None
+
+    df = pd.DataFrame(rows)
+    df.to_csv(dest, index=False, encoding="utf-8")
+    log.info(f"  DPE {dept} : {len(df):,} lignes sauvegardées → {dest.name}")
+    return dest
+
+
 def load_dpe(dept: str, skip: bool = False) -> pd.DataFrame:
     dest = get_raw_file_path(f"dpe_{dept}.csv")
 
     if not dest.exists():
-        log.warning("  Fichier DPE absent — poursuite sans données DPE")
-        log.warning(f"  → Placez le fichier CSV dans {DATA_DIR}/dpe_{dept}.csv")
-        return pd.DataFrame(columns=["code_insee", "score_dpe_median"])
+        dest = download_dpe(dept, skip=skip)
+        if dest is None or not dest.exists():
+            log.warning("  Fichier DPE indisponible — poursuite sans données DPE")
+            return pd.DataFrame(columns=["code_insee", "score_dpe_median"])
 
     log.info("Chargement DPE depuis fichier local…")
     try:
@@ -349,9 +418,45 @@ def fetch_georisques(codes_insee: list[str]) -> pd.DataFrame:
 # 5. Délinquance (par département)
 # ---------------------------------------------------------------------------
 
+def download_delinquance(skip: bool = False) -> Path | None:
+    """
+    Télécharge la base statistique départementale de la délinquance (Ministère de
+    l'Intérieur, via data.gouv.fr). Un seul fichier couvre tous les départements,
+    donc pas de paramètre `dept` ici — le téléchargement ne se fait qu'une fois.
+    """
+    dest = DATA_DIR / "delinquance_dep.csv"
+    if skip and dest.exists():
+        log.info("Délinquance déjà présente, skip téléchargement")
+        return dest
+
+    log.info(f"Téléchargement délinquance (base départementale) → {dest.name}")
+    log.info(f"  URL : {DELINQUANCE_URL}")
+
+    try:
+        r = requests.get(DELINQUANCE_URL, timeout=60)
+        r.raise_for_status()
+    except Exception as e:
+        log.warning(f"  Erreur lors du téléchargement délinquance : {e}")
+        return None
+
+    dest.write_bytes(r.content)
+    log.info(f"  Téléchargé : {len(r.content)/1e6:.1f} MB")
+    return dest
+
+
 def load_delinquance(dept: str, skip: bool = False) -> pd.DataFrame:
     # 1. Rechercher d'abord le fichier CSV officiel (données propres et récentes)
-    csv_dest = get_raw_file_path("donnee-dep-data.gouv-2025-geographie2025-produit-le2026-01-22.csv")
+    csv_dest = get_raw_file_path("delinquance_dep.csv")
+    if not csv_dest.exists():
+        # Rétrocompatibilité : ancien nom de fichier daté, s'il a été déposé à la main
+        legacy = get_raw_file_path("donnee-dep-data.gouv-2025-geographie2025-produit-le2026-01-22.csv")
+        csv_dest = legacy if legacy.exists() else csv_dest
+
+    if not csv_dest.exists():
+        downloaded = download_delinquance(skip=skip)
+        if downloaded is not None:
+            csv_dest = downloaded
+
     if csv_dest.exists():
         log.info("Chargement délinquance depuis le fichier CSV officiel…")
         try:
