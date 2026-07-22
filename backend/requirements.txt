@@ -39,5 +39,6 @@ seaborn==0.13.2
 plotly==5.22.0
 
 # Qualité code
-ruff==0.4.7             # linter + formatter (remplace flake8 + black)
+pylint==3.2.2           # linter
+black==24.4.2           # formatter
 pytest==8.2.2

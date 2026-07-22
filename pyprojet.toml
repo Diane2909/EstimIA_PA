@@ -1,25 +1,19 @@
-# EstimIA — Configuration Ruff (linter + formatter)
-# Remplace flake8 + black + isort en un seul outil
- 
-[tool.ruff]
-target-version = "py311"
+# EstimIA — Configuration Pylint (linter) + Black (formatter)
+
+[tool.black]
 line-length = 88
- 
-[tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "UP",  # pyupgrade
+target-version = ["py311"]
+
+[tool.pylint.main]
+py-version = "3.11"
+
+[tool.pylint."messages control"]
+disable = [
+    "missing-module-docstring",
+    "missing-function-docstring",
+    "missing-class-docstring",
+    "line-too-long",   # géré par Black
 ]
-ignore = [
-    "E501",  # line too long (géré par le formatter)
-    "B008",  # function call in default argument (ok pour FastAPI)
-]
- 
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
- 
+
+[tool.pylint.format]
+max-line-length = 88

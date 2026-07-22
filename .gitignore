@@ -43,6 +43,7 @@ frontend/out/
 #pdf
 Projet annuel 4IABD.pdf
 SyllabusDuProjet (1).pdf
+PA.pdf
 
 #__pycache__
-*__pycache__/*
+__pycache__/
