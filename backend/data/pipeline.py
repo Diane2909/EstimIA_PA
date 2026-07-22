@@ -358,6 +358,9 @@ def fetch_georisques(codes_insee: list[str]) -> pd.DataFrame:
 
     def fetch_single(insee: str) -> tuple[str, float | None]:
         try:
+            # GASPAR ne référence pas les arrondissements parisiens (75101-75120) : seul
+            # le code commune agrégé 75056 (Paris) renvoie des données. Vérifié via l'API :
+            # les codes d'arrondissement renvoient "results":0 sans ce remap.
             insee_query = "75056" if insee.startswith("751") else insee
             r = requests.get(
                 GEORISQUES_URL.format(insee=insee_query),
@@ -373,7 +376,9 @@ def fetch_georisques(codes_insee: list[str]) -> pd.DataFrame:
                 if isinstance(risques_detail, list):
                     nb_risques = len(risques_detail)
 
-            score = min(round(nb_risques / 8 * 10, 1), 10.0)
+            # Diviseur 14 (max de types de risques GASPAR observés en pratique) plutôt que 8 :
+            # à 8, la plupart des communes très exposées (ex: Seine-Saint-Denis) saturaient à 10/10.
+            score = min(round(nb_risques / 14 * 10, 1), 10.0)
             return insee, score
         except Exception:
             return insee, None

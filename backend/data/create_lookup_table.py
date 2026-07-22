@@ -1,7 +1,20 @@
+import re
 import sys
+import unicodedata
 from pathlib import Path
 import pandas as pd
 import joblib
+
+
+def normaliser_nom(nom: str) -> str:
+    """Normalise un nom de commune pour la comparaison : minuscules, sans accents,
+    tirets/apostrophes remplacés par des espaces, espaces multiples réduits."""
+    nom = str(nom).strip().lower()
+    nom = unicodedata.normalize("NFKD", nom).encode("ascii", "ignore").decode("ascii")
+    nom = re.sub(r"[-'’]", " ", nom)
+    nom = re.sub(r"\s+", " ", nom).strip()
+    return nom
+
 
 def main():
     print("===========================================================")
@@ -79,9 +92,23 @@ def main():
             'score_delinquance': float(row['score_delinquance'])
         }
 
+    print("Construction de la table Nom de commune -> Code postal...")
+    lookup_communes = {}
+    if 'nom_commune' in df.columns:
+        df['nom_commune_norm'] = df['nom_commune'].apply(normaliser_nom)
+        # Pour chaque commune, on retient le code postal le plus fréquent dans les transactions
+        communes_map = (
+            df.groupby('nom_commune_norm')['code_postal']
+            .agg(lambda s: s.value_counts().idxmax())
+        )
+        lookup_communes = communes_map.to_dict()
+    else:
+        print("[WARNING] Colonne 'nom_commune' absente — table de noms de commune non generee.")
+
     lookup_table = {
         'postaux': lookup_postaux,
-        'departements': lookup_depts
+        'departements': lookup_depts,
+        'communes': lookup_communes,
     }
 
     # Sauvegarde de la table
@@ -93,6 +120,7 @@ def main():
     print(f"[SUCCESS] Table de correspondance generee avec succes !")
     print(f"  Nombre de codes postaux enregistres : {len(lookup_postaux)}")
     print(f"  Nombre de departements enregistres  : {len(lookup_depts)}")
+    print(f"  Nombre de communes enregistrees     : {len(lookup_communes)}")
     print(f"  Fichier enregistre sous : {output_path.resolve()}")
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import re
+import unicodedata
 import joblib
 import pandas as pd
 from pathlib import Path
@@ -39,6 +41,53 @@ try:
 
 except Exception as e:
     print(f"[ERROR] Erreur lors du chargement des modeles : {e}")
+
+
+def _normaliser_nom(nom: str) -> str:
+    """Normalise un nom de commune : minuscules, sans accents, tirets/apostrophes
+    remplacés par des espaces, espaces multiples réduits."""
+    nom = str(nom).strip().lower()
+    nom = unicodedata.normalize("NFKD", nom).encode("ascii", "ignore").decode("ascii")
+    nom = re.sub(r"[-'’]", " ", nom)
+    nom = re.sub(r"\s+", " ", nom).strip()
+    return nom
+
+
+def resoudre_code_postal_par_ville(texte: str) -> str | None:
+    """
+    Cherche un nom de commune d'Île-de-France dans un texte libre et renvoie
+    son code postal le plus fréquent, ou None si aucune commune connue n'est trouvée.
+    """
+    if not LOOKUP_POSTAUX or not LOOKUP_POSTAUX.get("communes"):
+        return None
+
+    communes = LOOKUP_POSTAUX["communes"]
+    nom_direct = _normaliser_nom(texte)
+    texte_norm = f" {nom_direct} "
+
+    # Cas particulier des arrondissements parisiens : "Paris 16e", "16eme arrondissement",
+    # "Paris 1er"... ne correspondent jamais au nom officiel "Paris 16e Arrondissement".
+    m = re.search(r"paris\s*(\d{1,2})(?:e|er|eme)?\b", texte_norm)
+    if not m:
+        m = re.search(r"\b(\d{1,2})\s*(?:e|eme)\s*arrondissement", texte_norm)
+    if m:
+        numero = int(m.group(1))
+        if 1 <= numero <= 20:
+            return f"750{numero:02d}"
+
+    # Correspondance exacte du texte entier (cas d'un nom de ville seul)
+    if nom_direct in communes:
+        return communes[nom_direct]
+
+    # Sinon, recherche du nom de commune le plus long apparaissant dans le texte
+    meilleure_commune = None
+    for nom_commune in communes:
+        if f" {nom_commune} " in texte_norm:
+            if meilleure_commune is None or len(nom_commune) > len(meilleure_commune):
+                meilleure_commune = nom_commune
+
+    return communes.get(meilleure_commune) if meilleure_commune else None
+
 
 def outil_estimation_ml(surface: int, pieces: int, code_postal: str, type_bien: str, annee_visite: int = 2025, return_dict: bool = True):
     """

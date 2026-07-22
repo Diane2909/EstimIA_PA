@@ -7,7 +7,7 @@ backend_dir = Path(__file__).resolve().parent
 if str(backend_dir) not in sys.path:
     sys.path.append(str(backend_dir))
 
-from tools import outil_estimation_ml
+from tools import outil_estimation_ml, resoudre_code_postal_par_ville
 
 # --- Imports Resilients pour LangChain ---
 HAS_LANGCHAIN = False
@@ -128,6 +128,10 @@ class FallbackAgent:
         pieces_match = re.search(r'(\d+)\s*(?:piece|pièce|p\b)', msg)
         # Extraction du code postal (5 chiffres)
         cp_match = re.search(r'\b(75\d{3}|77\d{3}|78\d{3}|91\d{3}|92\d{3}|93\d{3}|94\d{3}|95\d{3})\b', msg)
+        code_postal = cp_match.group(1) if cp_match else None
+        # Si pas de code postal explicite, tenter de reconnaitre un nom de commune connu
+        if not code_postal:
+            code_postal = resoudre_code_postal_par_ville(msg)
         # Extraction du type de bien
         type_bien = "Appartement"  # Par défaut
         if "maison" in msg or "pavillon" in msg or "villa" in msg:
@@ -136,12 +140,11 @@ class FallbackAgent:
             type_bien = "Appartement"
 
         # Si on arrive à identifier les paramètres clés
-        if surface_match and pieces_match and cp_match:
+        if surface_match and pieces_match and code_postal:
             try:
                 surface = int(surface_match.group(1))
                 pieces = int(pieces_match.group(1))
-                code_postal = cp_match.group(1)
-                
+
                 # S'assurer que les valeurs sont dans des bornes valides pour le modèle
                 surface = max(10, min(300, surface))
                 pieces = max(1, min(10, pieces))
@@ -188,7 +191,7 @@ class FallbackAgent:
             "Pour produire votre rapport d'estimation, veuillez m'indiquer :\n"
             "1. La **surface habitable** en m²\n"
             "2. Le **nombre de pièces** principales\n"
-            "3. Le **code postal** à 5 chiffres en Île-de-France (ex: 92100, 75015)\n"
+            "3. Le **code postal** (ex: 92100, 75015) ou le **nom de la commune** en Île-de-France\n"
             "4. Le **type de bien** (*Maison* ou *Appartement*)\n\n"
             "Exemple : *\"Estime un appartement de 65m2 avec 3 pièces à Boulogne 92100\"*"
         )
