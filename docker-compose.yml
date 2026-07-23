@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      # Monte les .pkl locaux (générés via train_model.py + create_lookup_table.py)
+      # pour éviter tout appel cloud (AWS ou Azure) en développement.
+      - ./backend/model:/app/model:ro
+    environment:
+      # AWS (voir docs/aws-setup.md) — laisser vide pour utiliser le volume local
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET:-}
+      - AWS_REGION=${AWS_REGION:-eu-west-3}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      # Azure (voir docs/azure-setup.md) — laisser vide pour utiliser le volume local
+      - AZURE_STORAGE_ACCOUNT_URL=${AZURE_STORAGE_ACCOUNT_URL:-}
+      - AZURE_STORAGE_CONTAINER=${AZURE_STORAGE_CONTAINER:-models}
+      - AZURE_STORAGE_SAS_TOKEN=${AZURE_STORAGE_SAS_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
